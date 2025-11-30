@@ -375,14 +375,18 @@ export default function Home() {
                 console.warn(`Segment ${index + 1} is ${segmentSizeMB.toFixed(2)}MB, may cause issues`);
               }
               
-              // อ่านไฟล์เป็น base64
+              // อ่านไฟล์เป็น base64 (วิธีที่รองรับไฟล์ใหญ่)
               const arrayBuffer = await segments[index].arrayBuffer();
-              const base64Audio = btoa(
-                new Uint8Array(arrayBuffer).reduce(
-                  (data, byte) => data + String.fromCharCode(byte),
-                  ''
-                )
-              );
+              const uint8Array = new Uint8Array(arrayBuffer);
+              
+              // แปลงเป็น base64 แบบ chunk เพื่อหลีกเลี่ยงปัญหา memory
+              let binaryString = '';
+              const chunkSize = 8192; // 8KB chunks
+              for (let i = 0; i < uint8Array.length; i += chunkSize) {
+                const chunk = uint8Array.slice(i, i + chunkSize);
+                binaryString += String.fromCharCode.apply(null, Array.from(chunk));
+              }
+              const base64Audio = btoa(binaryString);
               
               // สร้าง prompt สำหรับ segment นี้
               const segmentPrompt = totalSegments > 1 
