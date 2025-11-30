@@ -25,6 +25,20 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // ตรวจสอบขนาดไฟล์ (Vercel Free tier limit ~4.5MB)
+    const maxSize = 4 * 1024 * 1024; // 4MB เพื่อความปลอดภัย
+    const fileSizeMB = audioFile.size / 1024 / 1024;
+    
+    if (audioFile.size > maxSize) {
+      return NextResponse.json(
+        { 
+          error: `Segment file too large: ${fileSizeMB.toFixed(2)}MB (max: 4MB)`,
+          details: 'Please reduce segment duration or use smaller audio segments'
+        },
+        { status: 413 }
+      );
+    }
+
     // อ่านไฟล์เป็น buffer
     const arrayBuffer = await audioFile.arrayBuffer();
     const buffer = Buffer.from(arrayBuffer);

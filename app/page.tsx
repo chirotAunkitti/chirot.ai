@@ -136,7 +136,10 @@ export default function Home() {
   };
 
   // ฟังก์ชันตัดไฟล์เสียงเป็น segments ตามเวลา (ใช้ Web Audio API)
-  const splitAudioIntoTimeSegments = async (audioFile: File, segmentDurationSeconds: number = 60): Promise<File[]> => {
+  // ปรับขนาด segment ให้เหมาะสมกับ Vercel limit (~4MB)
+  const splitAudioIntoTimeSegments = async (audioFile: File, maxSegmentSizeMB: number = 3): Promise<File[]> => {
+    const maxSegmentSizeBytes = maxSegmentSizeMB * 1024 * 1024;
+    const segmentDurationSeconds = 20; // เริ่มต้นที่ 20 วินาที
     return new Promise(async (resolve, reject) => {
       try {
         const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
@@ -150,9 +153,8 @@ export default function Home() {
         
         const segments: File[] = [];
         
-        for (let i = 0; i < totalSegments; i++) {
-          const startSample = i * segmentSamples;
-          const endSample = Math.min(startSample + segmentSamples, totalSamples);
+        // ฟังก์ชันช่วยสร้าง segment จากช่วง samples
+        const createSegmentFromSamples = (startSample: number, endSample: number, segmentIndex: number): File => {
           const segmentLength = endSample - startSample;
           
           // สร้าง AudioBuffer สำหรับ segment นี้
@@ -174,10 +176,60 @@ export default function Home() {
           // แปลง AudioBuffer เป็น WAV file
           const wav = audioBufferToWav(segmentBuffer);
           const blob = new Blob([wav], { type: 'audio/wav' });
-          const segmentFile = new File([blob], `${audioFile.name}_segment_${i + 1}.wav`, { type: 'audio/wav' });
-          segments.push(segmentFile);
+          return new File([blob], `${audioFile.name}_segment_${segmentIndex}.wav`, { type: 'audio/wav' });
+        };
+        
+        // แบ่ง segments และตรวจสอบขนาด
+        let segmentIndex = 1;
+        for (let i = 0; i < totalSegments; i++) {
+          const startSample = i * segmentSamples;
+          const endSample = Math.min(startSample + segmentSamples, totalSamples);
+          
+          let segmentFile = createSegmentFromSamples(startSample, endSample, segmentIndex);
+          
+          // ถ้า segment ใหญ่เกินไป ให้แบ่งย่อยลงอีก
+          if (segmentFile.size > maxSegmentSizeBytes) {
+            console.log(`Segment ${segmentIndex} is too large (${(segmentFile.size / 1024 / 1024).toFixed(2)}MB), splitting further...`);
+            
+            // แบ่งเป็น sub-segments ที่เล็กลง (10 วินาที)
+            const subSegmentDuration = 10;
+            const subSegmentSamples = subSegmentDuration * sampleRate;
+            const subStartSample = startSample;
+            const subEndSample = endSample;
+            const subTotalSegments = Math.ceil((subEndSample - subStartSample) / subSegmentSamples);
+            
+            for (let subI = 0; subI < subTotalSegments; subI++) {
+              const subStart = subStartSample + (subI * subSegmentSamples);
+              const subEnd = Math.min(subStart + subSegmentSamples, subEndSample);
+              
+              const subSegmentFile = createSegmentFromSamples(subStart, subEnd, segmentIndex);
+              
+              // ถ้ายังใหญ่เกินไป ให้แบ่งเป็น 5 วินาที
+              if (subSegmentFile.size > maxSegmentSizeBytes) {
+                console.log(`Sub-segment ${segmentIndex} is still too large, splitting to 5s segments...`);
+                const tinySegmentDuration = 5;
+                const tinySegmentSamples = tinySegmentDuration * sampleRate;
+                const tinyTotalSegments = Math.ceil((subEnd - subStart) / tinySegmentSamples);
+                
+                for (let tinyI = 0; tinyI < tinyTotalSegments; tinyI++) {
+                  const tinyStart = subStart + (tinyI * tinySegmentSamples);
+                  const tinyEnd = Math.min(tinyStart + tinySegmentSamples, subEnd);
+                  const tinySegmentFile = createSegmentFromSamples(tinyStart, tinyEnd, segmentIndex);
+                  segments.push(tinySegmentFile);
+                  segmentIndex++;
+                }
+              } else {
+                segments.push(subSegmentFile);
+                segmentIndex++;
+              }
+            }
+          } else {
+            segments.push(segmentFile);
+            segmentIndex++;
+          }
         }
         
+        console.log(`Created ${segments.length} segments from audio file`);
         resolve(segments);
       } catch (error) {
         console.error('Error splitting audio:', error);
@@ -278,7 +330,7 @@ export default function Home() {
         
         let segments: File[];
         try {
-          segments = await splitAudioIntoTimeSegments(file, 60); // 60 วินาทีต่อ segment
+          segments = await splitAudioIntoTimeSegments(file, 3); // สูงสุด 3MB ต่อ segment
         } catch (splitError: any) {
           console.error('Error splitting audio:', splitError);
           // ถ้าไม่สามารถตัดได้ ให้ใช้วิธีเดิม (chunk upload)
@@ -295,6 +347,12 @@ export default function Home() {
           
           for (let i = 0; i < segments.length; i++) {
             setProcessingProgress({ current: i + 1, total: totalSegments });
+            
+            // ตรวจสอบขนาด segment ก่อนส่ง
+            const segmentSizeMB = segments[i].size / 1024 / 1024;
+            if (segmentSizeMB > 3.5) {
+              console.warn(`Segment ${i + 1} is ${segmentSizeMB.toFixed(2)}MB, may cause issues`);
+            }
             
             const segmentFormData = new FormData();
             segmentFormData.append('audio', segments[i]);
