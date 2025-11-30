@@ -111,8 +111,8 @@ export default function Home() {
     }
 
     try {
-      // ใช้ chunk upload สำหรับไฟล์ใหญ่กว่า 4MB (Vercel Free tier limit)
-      const chunkSize = 4 * 1024 * 1024; // 4MB per chunk
+      // ใช้ chunk upload สำหรับไฟล์ใหญ่กว่า 3MB (Vercel Free tier limit ~4.5MB แต่ใช้ 3MB เพื่อความปลอดภัย)
+      const chunkSize = 3 * 1024 * 1024; // 3MB per chunk (ปลอดภัยกว่า 4MB)
       const useChunkUpload = file.size > chunkSize;
 
       if (useChunkUpload) {
@@ -139,12 +139,20 @@ export default function Home() {
             body: chunkFormData,
           });
 
-          if (!chunkResponse.ok) {
-            const errorData = await chunkResponse.json();
-            throw new Error(errorData.error || 'Failed to upload chunk');
+          // ตรวจสอบ content-type ก่อน parse JSON
+          const contentType = chunkResponse.headers.get('content-type');
+          let chunkData;
+          
+          if (contentType && contentType.includes('application/json')) {
+            chunkData = await chunkResponse.json();
+          } else {
+            const text = await chunkResponse.text();
+            throw new Error(`Failed to upload chunk: ${text.substring(0, 200)}`);
           }
 
-          const chunkData = await chunkResponse.json();
+          if (!chunkResponse.ok) {
+            throw new Error(chunkData.error || chunkData.details || 'Failed to upload chunk');
+          }
           
           // แสดง progress
           if (chunkData.complete) {
@@ -352,8 +360,8 @@ export default function Home() {
                     </p>
                     <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
                       ขนาด: {(file.size / 1024 / 1024).toFixed(2)} MB
-                    </p>
-                  </div>
+          </p>
+        </div>
                 )}
               </div>
 

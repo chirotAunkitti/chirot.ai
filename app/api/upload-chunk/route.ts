@@ -5,22 +5,49 @@ import { NextRequest, NextResponse } from 'next/server';
 export const chunkStorage = new Map<string, { chunks: Buffer[], totalChunks: number, fileName: string, mimeType: string }>();
 
 export const runtime = 'nodejs';
-export const maxDuration = 60;
+export const maxDuration = 10; // Vercel Free tier limit
 
 export async function POST(request: NextRequest) {
   try {
     const formData = await request.formData();
     const chunk = formData.get('chunk') as File;
-    const chunkIndex = parseInt(formData.get('chunkIndex') as string);
-    const totalChunks = parseInt(formData.get('totalChunks') as string);
+    const chunkIndexStr = formData.get('chunkIndex') as string;
+    const totalChunksStr = formData.get('totalChunks') as string;
     const sessionId = formData.get('sessionId') as string;
     const fileName = formData.get('fileName') as string;
     const mimeType = formData.get('mimeType') as string;
 
+    // Validate required fields
     if (!chunk || !sessionId) {
       return NextResponse.json(
-        { error: 'Missing required fields' },
+        { error: 'Missing required fields: chunk or sessionId' },
         { status: 400 }
+      );
+    }
+
+    if (!chunkIndexStr || !totalChunksStr) {
+      return NextResponse.json(
+        { error: 'Missing required fields: chunkIndex or totalChunks' },
+        { status: 400 }
+      );
+    }
+
+    const chunkIndex = parseInt(chunkIndexStr);
+    const totalChunks = parseInt(totalChunksStr);
+
+    if (isNaN(chunkIndex) || isNaN(totalChunks)) {
+      return NextResponse.json(
+        { error: 'Invalid chunkIndex or totalChunks' },
+        { status: 400 }
+      );
+    }
+
+    // ตรวจสอบขนาด chunk (ไม่เกิน 4MB)
+    const maxChunkSize = 4 * 1024 * 1024; // 4MB
+    if (chunk.size > maxChunkSize) {
+      return NextResponse.json(
+        { error: `Chunk size too large: ${(chunk.size / 1024 / 1024).toFixed(2)}MB (max: 4MB)` },
+        { status: 413 }
       );
     }
 
