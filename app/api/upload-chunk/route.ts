@@ -61,23 +61,42 @@ export async function POST(request: NextRequest) {
     // เก็บ chunk
     if (!chunkStorage.has(sessionId)) {
       chunkStorage.set(sessionId, {
-        chunks: [],
+        chunks: new Array(totalChunks),
         totalChunks,
-        fileName,
-        mimeType
+        fileName: fileName || 'audio',
+        mimeType: mimeType || 'audio/mp4'
       });
     }
 
-    const storage = chunkStorage.get(sessionId)!;
+    const storage = chunkStorage.get(sessionId);
+    if (!storage) {
+      return NextResponse.json(
+        { error: 'Failed to get storage' },
+        { status: 500 }
+      );
+    }
+
+    // ตรวจสอบว่า chunks array ถูกสร้างแล้ว
+    if (!storage.chunks || !Array.isArray(storage.chunks)) {
+      storage.chunks = new Array(totalChunks);
+    }
+
     storage.chunks[chunkIndex] = buffer;
 
     // ตรวจสอบว่าทุก chunks มาครบแล้วหรือยัง
-    const allChunksReceived = storage.chunks.length === totalChunks && 
-                               storage.chunks.every(chunk => chunk !== undefined);
+    const receivedChunks = storage.chunks.filter(c => c !== undefined && c !== null);
+    const allChunksReceived = receivedChunks.length === totalChunks;
 
     if (allChunksReceived) {
-      // รวม chunks เป็นไฟล์เดียว
-      const completeFile = Buffer.concat(storage.chunks);
+      // รวม chunks เป็นไฟล์เดียว (กรอง undefined/null ออก)
+      const validChunks = storage.chunks.filter(c => c !== undefined && c !== null) as Buffer[];
+      if (validChunks.length !== totalChunks) {
+        return NextResponse.json(
+          { error: `Missing chunks: received ${validChunks.length} of ${totalChunks}` },
+          { status: 400 }
+        );
+      }
+      const completeFile = Buffer.concat(validChunks);
       
       // ถ้าต้องการประมวลผลทันที (chunk สุดท้าย)
       if (processImmediately && prompt) {
