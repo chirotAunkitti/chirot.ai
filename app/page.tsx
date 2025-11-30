@@ -75,7 +75,16 @@ export default function Home() {
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
-      setFile(e.target.files[0]);
+      const selectedFile = e.target.files[0];
+      const maxSize = 90 * 1024 * 1024; // 90MB
+      
+      if (selectedFile.size > maxSize) {
+        setError(`ไฟล์ใหญ่เกินไป! ขนาดสูงสุดที่รองรับ: 90MB (ไฟล์ของคุณ: ${(selectedFile.size / 1024 / 1024).toFixed(2)} MB)`);
+        setFile(null);
+        return;
+      }
+      
+      setFile(selectedFile);
       setResult(null);
       setError(null);
     }
@@ -93,6 +102,14 @@ export default function Home() {
     setError(null);
     setResult(null);
 
+    // ตรวจสอบขนาดไฟล์อีกครั้งก่อนส่ง
+    const maxSize = 90 * 1024 * 1024; // 90MB
+    if (file.size > maxSize) {
+      setError(`ไฟล์ใหญ่เกินไป! ขนาดสูงสุดที่รองรับ: 90MB (ไฟล์ของคุณ: ${(file.size / 1024 / 1024).toFixed(2)} MB)`);
+      setLoading(false);
+      return;
+    }
+
     try {
       const formData = new FormData();
       formData.append('audio', file);
@@ -103,15 +120,40 @@ export default function Home() {
         body: formData,
       });
 
-      const data = await response.json();
+      // ตรวจสอบ content-type ก่อน parse JSON
+      const contentType = response.headers.get('content-type');
+      let data;
+      
+      if (contentType && contentType.includes('application/json')) {
+        data = await response.json();
+      } else {
+        // ถ้าไม่ใช่ JSON (เช่น 413 error ที่อาจเป็น HTML)
+        const text = await response.text();
+        
+        if (response.status === 413) {
+          throw new Error('ไฟล์ใหญ่เกินไป! Server ไม่สามารถประมวลผลไฟล์ขนาดนี้ได้ กรุณาลดขนาดไฟล์หรือแบ่งเป็นไฟล์เล็กๆ');
+        } else if (response.status >= 500) {
+          throw new Error('Server error: ' + text.substring(0, 200));
+        } else {
+          throw new Error('เกิดข้อผิดพลาด: ' + text.substring(0, 200));
+        }
+      }
 
       if (!response.ok) {
-        throw new Error(data.error || 'เกิดข้อผิดพลาด');
+        throw new Error(data.error || data.details || 'เกิดข้อผิดพลาด');
       }
 
       setResult(data);
     } catch (err: any) {
-      setError(err.message || 'เกิดข้อผิดพลาดในการประมวลผล');
+      // แสดง error message ที่ชัดเจน
+      if (err.message) {
+        setError(err.message);
+      } else if (err instanceof TypeError && err.message.includes('JSON')) {
+        setError('Server ตอบกลับด้วยข้อมูลที่ไม่ถูกต้อง กรุณาลองใหม่อีกครั้ง');
+      } else {
+        setError('เกิดข้อผิดพลาดในการประมวลผล: ' + (err.toString() || 'Unknown error'));
+      }
+      console.error('Error:', err);
     } finally {
       setLoading(false);
     }
@@ -240,7 +282,7 @@ export default function Home() {
                       <p className="pl-1">หรือลากวางไฟล์ที่นี่</p>
                     </div>
                     <p className="text-xs text-gray-500 dark:text-gray-400">
-                      MP3, WAV, OGG, WebM, M4A (สูงสุด 10MB)
+                      MP3, WAV, OGG, WebM, M4A (สูงสุด 90MB)
                     </p>
                   </div>
                 </div>

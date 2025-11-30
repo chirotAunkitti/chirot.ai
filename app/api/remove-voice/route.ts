@@ -1,6 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 
+// ตั้งค่า runtime และ body size limit
+export const runtime = 'nodejs';
+export const maxDuration = 300; // 5 minutes สำหรับ Vercel Pro, 10s สำหรับ Free tier
+
 export async function POST(request: NextRequest) {
   try {
     const formData = await request.formData();
@@ -11,6 +15,19 @@ export async function POST(request: NextRequest) {
       return NextResponse.json(
         { error: 'ไม่มีไฟล์เสียงที่อัปโหลด' },
         { status: 400 }
+      );
+    }
+
+    // ตรวจสอบขนาดไฟล์ (90MB limit)
+    const maxSize = 90 * 1024 * 1024; // 90MB
+    if (audioFile.size > maxSize) {
+      return NextResponse.json(
+        { 
+          error: `ไฟล์ใหญ่เกินไป! ขนาดสูงสุดที่รองรับ: 90MB (ไฟล์ของคุณ: ${(audioFile.size / 1024 / 1024).toFixed(2)} MB)`,
+          fileSize: audioFile.size,
+          maxSize: maxSize
+        },
+        { status: 413 }
       );
     }
 
