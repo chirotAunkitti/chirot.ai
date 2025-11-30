@@ -112,7 +112,7 @@ const LoadingScreen = ({
 
 export default function Home() {
   const [file, setFile] = useState<File | null>(null);
-  const [prompt, setPrompt] = useState<string>('คุณเป็นผู้เชี่ยวชาญในการประมวลผลเสียง กรุณาวิเคราะห์ไฟล์เสียงนี้ ออกมา ถอดเสียง เป็น Text จาก คลิป เสียนี้ สรุป เป็นไทย อังกฤษ ย่างละ 500 คำ อังกฤษ เป็นหลัก ภาษาไทยเอามา อ่านเฉยๆ');
+  const [prompt, setPrompt] = useState<string>('You are an expert audio analyst. Please analyze this audio file and provide a SUMMARY (not a full transcript) in both Thai and English. English summary should be approximately 500 words and be the primary focus. Thai summary should be approximately 500 words for reference reading only. Format: Start with English summary, then Thai summary. Do NOT provide a word-by-word transcript - provide a concise summary of the key points and main content.');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<any>(null);
   const [error, setError] = useState<string | null>(null);
@@ -379,11 +379,14 @@ export default function Home() {
               const model = genAI.getGenerativeModel({ 
                 model: modelName,
                 generationConfig: {
-                  maxOutputTokens: 8192, // เพิ่ม output token limit (default 2048, max 8192 สำหรับบาง models)
+                  maxOutputTokens: 8192, // เพิ่ม output token limit สูงสุด
                 }
               });
               
-              // ใช้ Streaming API เพื่อรับผลลัพธ์ทั้งหมด (หลีกเลี่ยง MAX_TOKENS limit)
+              // ใช้ Streaming API เพื่อรับผลลัพธ์ทั้งหมดในครั้งเดียว
+              // สร้าง prompt ที่ชัดเจนและเน้นย้ำให้ AI ทำตามคำสั่ง
+              const enhancedPrompt = `${prompt}\n\nIMPORTANT INSTRUCTIONS:\n- You MUST follow the prompt instructions exactly\n- If the prompt asks for a summary, provide a summary, NOT just a transcript\n- If the prompt asks for both Thai and English summaries, provide both\n- Do NOT just transcribe the audio word-by-word unless specifically asked\n- Follow the format and requirements specified in the prompt above`;
+              
               const result = await model.generateContentStream([
                 {
                   inlineData: {
@@ -391,17 +394,17 @@ export default function Home() {
                     mimeType: file.type || 'audio/mp4',
                   },
                 },
-                prompt,
+                enhancedPrompt,
               ]);
               
-              // รวบรวมผลลัพธ์จาก stream
+              // รวบรวมผลลัพธ์ทั้งหมดจาก stream
               let fullText = '';
               for await (const chunk of result.stream) {
                 const chunkText = chunk.text();
                 if (chunkText) {
                   fullText += chunkText;
                   // อัปเดต progress แบบ real-time
-                  setProcessingProgress({ current: 0.8 + (fullText.length / 1000000) * 0.2, total: 1 });
+                  setProcessingProgress({ current: 0.8 + Math.min((fullText.length / 200000) * 0.2, 0.2), total: 1 });
                 }
               }
               
@@ -414,38 +417,7 @@ export default function Home() {
             } catch (err: any) {
               lastError = err;
               console.log(`❌ Model ${modelName} failed: ${err.message?.substring(0, 100)}`);
-              
-              // ถ้า streaming ไม่ได้ ลองใช้วิธีปกติ
-              try {
-                const model = genAI.getGenerativeModel({ 
-                  model: modelName,
-                  generationConfig: {
-                    maxOutputTokens: 8192,
-                  }
-                });
-                const result = await model.generateContent([
-                  {
-                    inlineData: {
-                      data: base64Audio,
-                      mimeType: file.type || 'audio/mp4',
-                    },
-                  },
-                  prompt,
-                ]);
-                
-                const response = await result.response;
-                if (response) {
-                  const responseText = response.text();
-                  if (responseText && responseText.trim().length > 0) {
-                    text = responseText;
-                    successfulModel = modelName;
-                    console.log(`✅ Success with model: ${modelName} (non-streaming), text length: ${text.length}`);
-                    break;
-                  }
-                }
-              } catch (fallbackErr: any) {
-                continue;
-              }
+              continue;
             }
           }
           
@@ -553,10 +525,10 @@ export default function Home() {
               }
               const base64Audio = btoa(binaryString);
               
-              // สร้าง prompt สำหรับ segment นี้
+              // สร้าง prompt สำหรับ segment นี้ (เพิ่มคำสั่งให้ชัดเจน)
               const segmentPrompt = totalSegments > 1 
-                ? `${prompt}\n\nหมายเหตุ: นี่เป็นส่วนที่ ${index + 1} จากทั้งหมด ${totalSegments} ส่วนของไฟล์เสียง กรุณาถอดเสียงส่วนนี้เท่านั้น`
-                : prompt;
+                ? `${prompt}\n\nIMPORTANT: This is segment ${index + 1} of ${totalSegments} parts of the audio file. Process this segment according to the prompt instructions above.\n\nIMPORTANT INSTRUCTIONS:\n- You MUST follow the prompt instructions exactly\n- If the prompt asks for a summary, provide a summary, NOT just a transcript\n- If the prompt asks for both Thai and English summaries, provide both\n- Do NOT just transcribe the audio word-by-word unless specifically asked`
+                : `${prompt}\n\nIMPORTANT INSTRUCTIONS:\n- You MUST follow the prompt instructions exactly\n- If the prompt asks for a summary, provide a summary, NOT just a transcript\n- If the prompt asks for both Thai and English summaries, provide both\n- Do NOT just transcribe the audio word-by-word unless specifically asked`;
               
               let text = '';
               let lastError: any = null;
@@ -567,11 +539,14 @@ export default function Home() {
                   const model = genAI.getGenerativeModel({ 
                     model: modelName,
                     generationConfig: {
-                      maxOutputTokens: 8192, // เพิ่ม output token limit
+                      maxOutputTokens: 8192, // เพิ่ม output token limit สูงสุด
                     }
                   });
                   
-                  // ใช้ Streaming API
+                  // ใช้ Streaming API เพื่อรับผลลัพธ์ทั้งหมด
+                  // เน้นย้ำให้ AI ทำตามคำสั่งใน prompt
+                  const enhancedSegmentPrompt = `${segmentPrompt}\n\nRemember: Follow the original prompt instructions carefully. Do not just transcribe - provide the requested format (summary, analysis, etc.)`;
+                  
                   const result = await model.generateContentStream([
                     {
                       inlineData: {
@@ -579,10 +554,10 @@ export default function Home() {
                         mimeType: segments[index].type || 'audio/wav',
                       },
                     },
-                    segmentPrompt,
+                    enhancedSegmentPrompt,
                   ]);
                   
-                  // รวบรวมผลลัพธ์จาก stream
+                  // รวบรวมผลลัพธ์ทั้งหมดจาก stream
                   let fullText = '';
                   for await (const chunk of result.stream) {
                     const chunkText = chunk.text();
@@ -597,36 +572,7 @@ export default function Home() {
                   }
                 } catch (err: any) {
                   lastError = err;
-                  
-                  // ถ้า streaming ไม่ได้ ลองใช้วิธีปกติ
-                  try {
-                    const model = genAI.getGenerativeModel({ 
-                      model: modelName,
-                      generationConfig: {
-                        maxOutputTokens: 8192,
-                      }
-                    });
-                    const result = await model.generateContent([
-                      {
-                        inlineData: {
-                          data: base64Audio,
-                          mimeType: segments[index].type || 'audio/wav',
-                        },
-                      },
-                      segmentPrompt,
-                    ]);
-                    
-                    const response = await result.response;
-                    if (response) {
-                      const responseText = response.text();
-                      if (responseText && responseText.trim().length > 0) {
-                        text = responseText;
-                        break;
-                      }
-                    }
-                  } catch (fallbackErr: any) {
-                    continue;
-                  }
+                  continue;
                 }
               }
               
@@ -826,7 +772,7 @@ export default function Home() {
     setFile(null);
     setResult(null);
     setError(null);
-    setPrompt('คุณเป็นผู้เชี่ยวชาญในการประมวลผลเสียง กรุณาวิเคราะห์ไฟล์เสียงนี้ออกมา ถอดเสียง เป็น Text จาก คลิป เสียนี้ สรุป เป็นไทย อังกฤษ ย่างละ 500 คำ อังกฤษ เป็นหลัก ภาษาไทยเอามา อ่านเฉยๆ');
+    setPrompt('You are an expert audio analyst. Please analyze this audio file and provide a SUMMARY (not a full transcript) in both Thai and English. English summary should be approximately 500 words and be the primary focus. Thai summary should be approximately 500 words for reference reading only. Format: Start with English summary, then Thai summary. Do NOT provide a word-by-word transcript - provide a concise summary of the key points and main content.');
   };
 
   const handleCopyText = async () => {
