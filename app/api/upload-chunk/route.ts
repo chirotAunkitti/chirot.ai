@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { GoogleGenerativeAI } from '@google/generative-ai';
 
 // เก็บ chunks ใน memory (สำหรับ Vercel Free tier)
 // หมายเหตุ: ใน production ควรใช้ Redis หรือ database
@@ -34,6 +35,8 @@ export async function POST(request: NextRequest) {
 
     const chunkIndex = parseInt(chunkIndexStr);
     const totalChunks = parseInt(totalChunksStr);
+    const prompt = formData.get('prompt') as string;
+    const processImmediately = formData.get('processImmediately') === 'true';
 
     if (isNaN(chunkIndex) || isNaN(totalChunks)) {
       return NextResponse.json(
@@ -76,15 +79,98 @@ export async function POST(request: NextRequest) {
       // รวม chunks เป็นไฟล์เดียว
       const completeFile = Buffer.concat(storage.chunks);
       
-      // เก็บไฟล์รวมไว้ใน storage
-      storage.chunks = [completeFile]; // เก็บเป็นไฟล์เดียว
-      
-      return NextResponse.json({
-        success: true,
-        complete: true,
-        message: 'All chunks received and merged',
-        sessionId
-      });
+      // ถ้าต้องการประมวลผลทันที (chunk สุดท้าย)
+      if (processImmediately && prompt) {
+        try {
+          // ประมวลผลทันทีใน invocation เดียวกัน
+          const base64Audio = completeFile.toString('base64');
+          const apiKey = process.env.GEMINI_API_KEY;
+          
+          if (!apiKey) {
+            return NextResponse.json(
+              { error: 'ไม่พบ API Key' },
+              { status: 500 }
+            );
+          }
+
+          const genAI = new GoogleGenerativeAI(apiKey);
+          const modelsToTry = [
+            'gemini-2.5-flash',
+            'gemini-2.5-pro',
+            'gemini-1.5-flash',
+            'gemini-1.5-pro',
+            'gemini-pro',
+          ];
+          
+          let text = '';
+          let lastError: any = null;
+
+          for (const modelName of modelsToTry) {
+            try {
+              const model = genAI.getGenerativeModel({ model: modelName });
+              const result = await model.generateContent([
+                {
+                  inlineData: {
+                    data: base64Audio,
+                    mimeType: storage.mimeType || 'audio/mp4',
+                  },
+                },
+                prompt,
+              ]);
+
+              const response = await result.response;
+              if (response) {
+                const responseText = response.text();
+                if (responseText && responseText.trim().length > 0) {
+                  text = responseText;
+                  break;
+                }
+              }
+            } catch (err: any) {
+              lastError = err;
+              continue;
+            }
+          }
+
+          if (!text) {
+            throw new Error(lastError?.message || 'ไม่สามารถประมวลผลเสียงได้');
+          }
+
+          // ลบไฟล์จาก storage
+          chunkStorage.delete(sessionId);
+
+          return NextResponse.json({
+            success: true,
+            complete: true,
+            message: 'ประมวลผลเสร็จสิ้น',
+            result: text,
+            fileName: storage.fileName,
+            fileSize: completeFile.length,
+            fileType: storage.mimeType,
+          });
+        } catch (error: any) {
+          console.error('Error processing audio:', error);
+          // ลบไฟล์จาก storage
+          chunkStorage.delete(sessionId);
+          return NextResponse.json(
+            { 
+              error: 'เกิดข้อผิดพลาดในการประมวลผล',
+              details: error.message 
+            },
+            { status: 500 }
+          );
+        }
+      } else {
+        // เก็บไฟล์รวมไว้ใน storage (สำหรับกรณีไม่ประมวลผลทันที)
+        storage.chunks = [completeFile];
+        
+        return NextResponse.json({
+          success: true,
+          complete: true,
+          message: 'All chunks received and merged',
+          sessionId
+        });
+      }
     }
 
     return NextResponse.json({
