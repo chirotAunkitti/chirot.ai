@@ -320,7 +320,119 @@ export default function Home() {
     }
 
     try {
-      // สำหรับไฟล์ใหญ่กว่า 20MB ให้ใช้วิธีแบ่งเป็น segments ตามเวลา
+      // วิธีใหม่: ส่งไฟล์ทั้งหมดไปยัง Gemini โดยตรงจาก client (ไม่ต้องตัดแบ่ง)
+      // ข้อดี: ไม่มี timeout limit, ได้ผลลัพธ์ครบถ้วน, เร็วกว่า
+      // ข้อจำกัด: Gemini API limit ~20MB, Browser memory limit
+      
+      // ตรวจสอบขนาดไฟล์ (Gemini API รองรับสูงสุด ~20MB สำหรับ audio)
+      const geminiMaxSize = 20 * 1024 * 1024; // 20MB
+      const useDirectProcessing = file.size <= geminiMaxSize;
+      
+      if (useDirectProcessing) {
+        // ส่งไฟล์ทั้งหมดไปยัง Gemini โดยตรง
+        console.log('Processing entire file directly from client...');
+        setUploadProgress({ current: 1, total: 1 });
+        setProcessingProgress({ current: 0, total: 1 });
+        
+        try {
+          // ดึง API key จาก server
+          const apiKeyResponse = await fetch('/api/get-api-key');
+          if (!apiKeyResponse.ok) {
+            throw new Error('ไม่สามารถดึง API key ได้');
+          }
+          const apiKeyData = await apiKeyResponse.json();
+          if (!apiKeyData.apiKey) {
+            throw new Error('ไม่พบ API key');
+          }
+          
+          const genAI = new GoogleGenerativeAI(apiKeyData.apiKey);
+          const modelsToTry = [
+            'gemini-2.5-flash',
+            'gemini-2.5-pro',
+            'gemini-1.5-flash',
+            'gemini-1.5-pro',
+            'gemini-pro',
+          ];
+          
+          // อ่านไฟล์เป็น base64
+          setProcessingProgress({ current: 0.5, total: 1 });
+          const arrayBuffer = await file.arrayBuffer();
+          const uint8Array = new Uint8Array(arrayBuffer);
+          
+          // แปลงเป็น base64 แบบ chunk เพื่อหลีกเลี่ยงปัญหา memory
+          let binaryString = '';
+          const chunkSize = 8192; // 8KB chunks
+          for (let i = 0; i < uint8Array.length; i += chunkSize) {
+            const chunk = uint8Array.slice(i, i + chunkSize);
+            binaryString += String.fromCharCode.apply(null, Array.from(chunk));
+          }
+          const base64Audio = btoa(binaryString);
+          
+          setProcessingProgress({ current: 0.7, total: 1 });
+          
+          // ประมวลผลด้วย Gemini API
+          let text = '';
+          let lastError: any = null;
+          let successfulModel = '';
+          
+          for (const modelName of modelsToTry) {
+            try {
+              console.log(`Trying model: ${modelName}`);
+              const model = genAI.getGenerativeModel({ model: modelName });
+              const result = await model.generateContent([
+                {
+                  inlineData: {
+                    data: base64Audio,
+                    mimeType: file.type || 'audio/mp4',
+                  },
+                },
+                prompt,
+              ]);
+              
+              const response = await result.response;
+              if (response) {
+                const responseText = response.text();
+                if (responseText && responseText.trim().length > 0) {
+                  text = responseText;
+                  successfulModel = modelName;
+                  console.log(`✅ Success with model: ${modelName}, text length: ${text.length}`);
+                  break;
+                }
+              }
+            } catch (err: any) {
+              lastError = err;
+              console.log(`❌ Model ${modelName} failed: ${err.message?.substring(0, 100)}`);
+              continue;
+            }
+          }
+          
+          if (!text) {
+            throw new Error(lastError?.message || 'ไม่สามารถประมวลผลเสียงได้');
+          }
+          
+          setProcessingProgress({ current: 1, total: 1 });
+          
+          setResult({
+            success: true,
+            message: `ประมวลผลเสร็จสิ้น (ใช้ model: ${successfulModel})`,
+            result: text,
+            fileName: file.name,
+            fileSize: file.size,
+            fileType: file.type || 'audio/mp4',
+          });
+          
+          setProcessingProgress(null);
+          setUploadProgress(null);
+          setLoading(false);
+          return;
+        } catch (error: any) {
+          console.error('Error processing file directly:', error);
+          // ถ้าล้มเหลว ให้ fallback ไปใช้วิธีแบ่ง segments
+          console.log('Falling back to segment-based processing...');
+        }
+      }
+      
+      // วิธีเดิม: แบ่งเป็น segments สำหรับไฟล์ใหญ่กว่า 20MB
       const largeFileThreshold = 20 * 1024 * 1024; // 20MB
       const useTimeSegments = file.size > largeFileThreshold;
       
