@@ -1,6 +1,7 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
+import { processAudioWithGemini } from './lib/gemini-client';
 
 // Waveform Animation Component
 const WaveformLoader = () => {
@@ -69,9 +70,25 @@ const LoadingScreen = () => {
 export default function Home() {
   const [file, setFile] = useState<File | null>(null);
   const [prompt, setPrompt] = useState<string>('คุณเป็นผู้เชี่ยวชาญในการประมวลผลเสียง กรุณาวิเคราะห์ไฟล์เสียงนี้ ออกมา ถอดเสียง เป็น Text จาก คลิป เสียนี้ สรุป เป็นไทย อังกฤษ ย่างละ 500 คำ อังกฤษ เป็นหลัก ภาษาไทยเอามา อ่านเฉยๆ');
+  const [apiKey, setApiKey] = useState<string>('');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<any>(null);
   const [error, setError] = useState<string | null>(null);
+
+  // โหลด API key จาก localStorage
+  useEffect(() => {
+    const savedApiKey = localStorage.getItem('gemini_api_key');
+    if (savedApiKey) {
+      setApiKey(savedApiKey);
+    }
+  }, []);
+
+  // บันทึก API key เมื่อเปลี่ยน
+  useEffect(() => {
+    if (apiKey) {
+      localStorage.setItem('gemini_api_key', apiKey);
+    }
+  }, [apiKey]);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
@@ -89,26 +106,18 @@ export default function Home() {
       return;
     }
 
+    if (!apiKey || apiKey.trim() === '') {
+      setError('กรุณาใส่ Gemini API Key');
+      return;
+    }
+
     setLoading(true);
     setError(null);
     setResult(null);
 
     try {
-      const formData = new FormData();
-      formData.append('audio', file);
-      formData.append('prompt', prompt);
-
-      const response = await fetch('/api/remove-voice', {
-        method: 'POST',
-        body: formData,
-      });
-
-      const data = await response.json();
-
-      if (!response.ok) {
-        throw new Error(data.error || 'เกิดข้อผิดพลาด');
-      }
-
+      // ใช้ client-side API call
+      const data = await processAudioWithGemini(file, prompt, apiKey);
       setResult(data);
     } catch (err: any) {
       setError(err.message || 'เกิดข้อผิดพลาดในการประมวลผล');
@@ -187,6 +196,24 @@ export default function Home() {
           {/* Upload Card */}
           <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-xl p-8 mb-8">
             <form onSubmit={handleSubmit} className="space-y-6">
+              {/* API Key Input */}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                  Gemini API Key <span className="text-red-500">*</span>
+                </label>
+                <input
+                  type="password"
+                  value={apiKey}
+                  onChange={(e) => setApiKey(e.target.value)}
+                  disabled={loading}
+                  className="w-full px-4 py-3 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent bg-white dark:bg-gray-700 text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                  placeholder="ใส่ Gemini API Key ของคุณ"
+                />
+                <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                  รับ API Key ได้ที่: <a href="https://makersuite.google.com/app/apikey" target="_blank" rel="noopener noreferrer" className="text-indigo-600 dark:text-indigo-400 hover:underline">https://makersuite.google.com/app/apikey</a>
+                </p>
+              </div>
+
               {/* Prompt Input */}
               <div>
                 <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
@@ -260,7 +287,7 @@ export default function Home() {
               <div className="flex gap-4">
                 <button
                   type="submit"
-                  disabled={!file || loading}
+                  disabled={!file || !apiKey || loading}
                   className="flex-1 bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-400 disabled:cursor-not-allowed text-white font-semibold py-3 px-6 rounded-lg transition-colors"
                 >
                   {loading ? (
