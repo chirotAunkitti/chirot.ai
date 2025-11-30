@@ -111,39 +111,98 @@ export default function Home() {
     }
 
     try {
-      const formData = new FormData();
-      formData.append('audio', file);
-      formData.append('prompt', prompt);
+      // ใช้ chunk upload สำหรับไฟล์ใหญ่กว่า 4MB (Vercel Free tier limit)
+      const chunkSize = 4 * 1024 * 1024; // 4MB per chunk
+      const useChunkUpload = file.size > chunkSize;
 
-      const response = await fetch('/api/remove-voice', {
-        method: 'POST',
-        body: formData,
-      });
+      if (useChunkUpload) {
+        // Chunk Upload
+        const sessionId = `session_${Date.now()}_${Math.random().toString(36).substring(7)}`;
+        const totalChunks = Math.ceil(file.size / chunkSize);
 
-      // ตรวจสอบ content-type ก่อน parse JSON
-      const contentType = response.headers.get('content-type');
-      let data;
-      
-      if (contentType && contentType.includes('application/json')) {
-        data = await response.json();
-      } else {
-        // ถ้าไม่ใช่ JSON (เช่น 413 error ที่อาจเป็น HTML)
-        const text = await response.text();
-        
-        if (response.status === 413) {
-          throw new Error('ไฟล์ใหญ่เกินไป! Server ไม่สามารถประมวลผลไฟล์ขนาดนี้ได้ กรุณาลดขนาดไฟล์หรือแบ่งเป็นไฟล์เล็กๆ');
-        } else if (response.status >= 500) {
-          throw new Error('Server error: ' + text.substring(0, 200));
-        } else {
-          throw new Error('เกิดข้อผิดพลาด: ' + text.substring(0, 200));
+        // ส่ง chunks ทีละ chunk
+        for (let i = 0; i < totalChunks; i++) {
+          const start = i * chunkSize;
+          const end = Math.min(start + chunkSize, file.size);
+          const chunk = file.slice(start, end);
+
+          const chunkFormData = new FormData();
+          chunkFormData.append('chunk', chunk);
+          chunkFormData.append('chunkIndex', i.toString());
+          chunkFormData.append('totalChunks', totalChunks.toString());
+          chunkFormData.append('sessionId', sessionId);
+          chunkFormData.append('fileName', file.name);
+          chunkFormData.append('mimeType', file.type || 'audio/mp4');
+
+          const chunkResponse = await fetch('/api/upload-chunk', {
+            method: 'POST',
+            body: chunkFormData,
+          });
+
+          if (!chunkResponse.ok) {
+            const errorData = await chunkResponse.json();
+            throw new Error(errorData.error || 'Failed to upload chunk');
+          }
+
+          const chunkData = await chunkResponse.json();
+          
+          // แสดง progress
+          if (chunkData.complete) {
+            // ไฟล์รวมเสร็จแล้ว เรียก API ประมวลผล
+            const processFormData = new FormData();
+            processFormData.append('sessionId', sessionId);
+            processFormData.append('prompt', prompt);
+
+            const processResponse = await fetch('/api/process-audio', {
+              method: 'POST',
+              body: processFormData,
+            });
+
+            if (!processResponse.ok) {
+              const errorData = await processResponse.json();
+              throw new Error(errorData.error || errorData.details || 'Failed to process audio');
+            }
+
+            const processData = await processResponse.json();
+            setResult(processData);
+            break;
+          }
         }
-      }
+      } else {
+        // ไฟล์เล็ก ใช้วิธีเดิม
+        const formData = new FormData();
+        formData.append('audio', file);
+        formData.append('prompt', prompt);
 
-      if (!response.ok) {
-        throw new Error(data.error || data.details || 'เกิดข้อผิดพลาด');
-      }
+        const response = await fetch('/api/remove-voice', {
+          method: 'POST',
+          body: formData,
+        });
 
-      setResult(data);
+        // ตรวจสอบ content-type ก่อน parse JSON
+        const contentType = response.headers.get('content-type');
+        let data;
+        
+        if (contentType && contentType.includes('application/json')) {
+          data = await response.json();
+        } else {
+          const text = await response.text();
+          
+          if (response.status === 413) {
+            throw new Error('ไฟล์ใหญ่เกินไป! Server ไม่สามารถประมวลผลไฟล์ขนาดนี้ได้ กรุณาลดขนาดไฟล์หรือแบ่งเป็นไฟล์เล็กๆ');
+          } else if (response.status >= 500) {
+            throw new Error('Server error: ' + text.substring(0, 200));
+          } else {
+            throw new Error('เกิดข้อผิดพลาด: ' + text.substring(0, 200));
+          }
+        }
+
+        if (!response.ok) {
+          throw new Error(data.error || data.details || 'เกิดข้อผิดพลาด');
+        }
+
+        setResult(data);
+      }
     } catch (err: any) {
       // แสดง error message ที่ชัดเจน
       if (err.message) {
