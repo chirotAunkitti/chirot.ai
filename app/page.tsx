@@ -35,7 +35,7 @@ const WaveformLoader = () => {
 };
 
 // Loading Screen Component
-const LoadingScreen = () => {
+const LoadingScreen = ({ progress }: { progress?: { current: number; total: number } | null }) => {
   return (
     <div className="bg-gradient-to-br from-slate-900 via-blue-900 to-slate-900 rounded-2xl shadow-2xl p-16 mb-8 min-h-[500px] flex items-center justify-center">
       <div className="flex flex-col items-center justify-center text-center w-full">
@@ -54,12 +54,27 @@ const LoadingScreen = () => {
           <WaveformLoader />
         </div>
         
+        {/* Progress Indicator */}
+        {progress && (
+          <div className="mt-6 w-full max-w-md">
+            <div className="bg-gray-700 rounded-full h-3 overflow-hidden">
+              <div 
+                className="bg-blue-500 h-full transition-all duration-300"
+                style={{ width: `${(progress.current / progress.total) * 100}%` }}
+              />
+            </div>
+            <p className="text-gray-300 text-sm mt-2">
+              Uploading chunks: {progress.current} / {progress.total}
+            </p>
+          </div>
+        )}
+        
         {/* ข้อความ */}
         <h2 className="text-4xl font-bold text-white mt-12 mb-4">
           Your Transcription Is Being Processed
         </h2>
         <p className="text-gray-300 text-xl">
-          We're converting your audio into high-quality text.
+          {progress ? `Uploading file... (${progress.current}/${progress.total} chunks)` : "We're converting your audio into high-quality text."}
         </p>
       </div>
     </div>
@@ -72,6 +87,7 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<any>(null);
   const [error, setError] = useState<string | null>(null);
+  const [uploadProgress, setUploadProgress] = useState<{ current: number; total: number } | null>(null);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
@@ -122,6 +138,8 @@ export default function Home() {
 
         // ส่ง chunks ทีละ chunk
         for (let i = 0; i < totalChunks; i++) {
+          setUploadProgress({ current: i + 1, total: totalChunks });
+          
           const start = i * chunkSize;
           const end = Math.min(start + chunkSize, file.size);
           const chunk = file.slice(start, end);
@@ -164,8 +182,10 @@ export default function Home() {
           
           // ถ้า chunks ครบและประมวลผลเสร็จแล้ว
           if (chunkData.complete) {
+            console.log('Chunks complete, checking for result...', chunkData);
             if (chunkData.result) {
               // ได้ผลลัพธ์แล้ว (ประมวลผลเสร็จ)
+              console.log('Got result, setting state...');
               setResult({
                 success: true,
                 message: chunkData.message || 'ประมวลผลเสร็จสิ้น',
@@ -174,11 +194,19 @@ export default function Home() {
                 fileSize: chunkData.fileSize,
                 fileType: chunkData.fileType,
               });
+              setUploadProgress(null);
               break;
             } else {
-              // chunks ครบแล้วแต่ยังไม่ประมวลผล (ไม่ควรเกิดขึ้นถ้า processImmediately = true)
-              console.warn('Chunks complete but no result');
+              // chunks ครบแล้วแต่ยังไม่ประมวลผล
+              console.warn('Chunks complete but no result. Data:', chunkData);
+              // ถ้า processImmediately = true แต่ไม่มี result อาจเป็นเพราะ timeout หรือ error
+              if (i === totalChunks - 1) {
+                setUploadProgress(null);
+                throw new Error('Chunks uploaded but processing failed or timed out. Please try again.');
+              }
             }
+          } else {
+            console.log(`Chunk ${i + 1}/${totalChunks} uploaded. Progress: ${chunkData.received || 0}/${chunkData.total || totalChunks}`);
           }
         }
       } else {
@@ -228,6 +256,7 @@ export default function Home() {
       console.error('Error:', err);
     } finally {
       setLoading(false);
+      setUploadProgress(null);
     }
   };
 
@@ -404,7 +433,7 @@ export default function Home() {
           </div>
 
           {/* Loading Screen */}
-          {loading && <LoadingScreen />}
+          {loading && <LoadingScreen progress={uploadProgress} />}
 
           {/* Error Message */}
           {error && (

@@ -87,7 +87,10 @@ export async function POST(request: NextRequest) {
     const receivedChunks = storage.chunks.filter(c => c !== undefined && c !== null);
     const allChunksReceived = receivedChunks.length === totalChunks;
 
+    console.log(`Chunk ${chunkIndex + 1}/${totalChunks} received. Total received: ${receivedChunks.length}/${totalChunks}`);
+
     if (allChunksReceived) {
+      console.log('All chunks received, merging and processing...');
       // รวม chunks เป็นไฟล์เดียว (กรอง undefined/null ออก)
       const validChunks = storage.chunks.filter(c => c !== undefined && c !== null) as Buffer[];
       if (validChunks.length !== totalChunks) {
