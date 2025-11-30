@@ -322,13 +322,11 @@ export default function Home() {
     try {
       // วิธีใหม่: ส่งไฟล์ทั้งหมดไปยัง Gemini โดยตรงจาก client (ไม่ต้องตัดแบ่ง)
       // ข้อดี: ไม่มี timeout limit, ได้ผลลัพธ์ครบถ้วน, เร็วกว่า
-      // ข้อจำกัด: Gemini API limit ~20MB, Browser memory limit
+      // ลองส่งไฟล์ทั้งหมดก่อน ถ้า error ก็ fallback ไปใช้วิธีแบ่ง segments
       
-      // ตรวจสอบขนาดไฟล์ (Gemini API รองรับสูงสุด ~20MB สำหรับ audio)
-      const geminiMaxSize = 20 * 1024 * 1024; // 20MB
-      const useDirectProcessing = file.size <= geminiMaxSize;
-      
-      if (useDirectProcessing) {
+      // ลองส่งไฟล์ทั้งหมดไปยัง Gemini โดยตรง (ไม่จำกัดขนาด)
+      // ถ้า Gemini API reject หรือ error ก็จะ fallback ไปใช้วิธีแบ่ง segments
+      {
         // ส่งไฟล์ทั้งหมดไปยัง Gemini โดยตรง
         console.log('Processing entire file directly from client...');
         setUploadProgress({ current: 1, total: 1 });
@@ -427,31 +425,41 @@ export default function Home() {
           return;
         } catch (error: any) {
           console.error('Error processing file directly:', error);
-          // ถ้าล้มเหลว ให้ fallback ไปใช้วิธีแบ่ง segments
-          console.log('Falling back to segment-based processing...');
+          // ถ้าล้มเหลว (อาจเป็นเพราะไฟล์ใหญ่เกิน Gemini limit) ให้ fallback ไปใช้วิธีแบ่ง segments
+          console.log('File too large or API error, falling back to segment-based processing...');
+          
+          // ตรวจสอบว่า error เป็นเพราะไฟล์ใหญ่เกินหรือไม่
+          const isFileTooLarge = error.message?.includes('too large') || 
+                                 error.message?.includes('size') ||
+                                 error.message?.includes('limit') ||
+                                 error.status === 413;
+          
+          if (isFileTooLarge) {
+            console.log('File is too large for direct processing, using segmentation...');
+          } else {
+            // ถ้าไม่ใช่ปัญหาไฟล์ใหญ่ อาจเป็นปัญหาอื่น ให้ลองอีกครั้งหรือใช้ segmentation
+            console.log('Unknown error, trying segmentation method...');
+          }
         }
       }
       
-      // วิธีเดิม: แบ่งเป็น segments สำหรับไฟล์ใหญ่กว่า 20MB
-      const largeFileThreshold = 20 * 1024 * 1024; // 20MB
-      const useTimeSegments = file.size > largeFileThreshold;
+      // วิธี fallback: แบ่งเป็น segments สำหรับไฟล์ที่ส่งทั้งหมดไม่ได้
+      // (โค้ดด้านล่างจะทำงานถ้าส่งไฟล์ทั้งหมดล้มเหลว)
+      // แบ่งไฟล์เป็น segments ตามเวลา
+      console.log('Splitting audio into time segments...');
+      setUploadProgress({ current: 0, total: 1 }); // แสดงว่าเริ่มตัดไฟล์
       
-      if (useTimeSegments) {
-        // แบ่งไฟล์เป็น segments ตามเวลา (60 วินาทีต่อ segment)
-        console.log('Splitting audio into time segments...');
-        setUploadProgress({ current: 0, total: 1 }); // แสดงว่าเริ่มตัดไฟล์
-        
-        let segments: File[];
-        try {
-          segments = await splitAudioIntoTimeSegments(file, 3); // สูงสุด 3MB ต่อ segment
-        } catch (splitError: any) {
-          console.error('Error splitting audio:', splitError);
-          // ถ้าไม่สามารถตัดได้ ให้ใช้วิธีเดิม (chunk upload)
-          console.log('Falling back to chunk upload method...');
-          segments = [];
-        }
-        
-        if (segments.length > 0) {
+      let segments: File[];
+      try {
+        segments = await splitAudioIntoTimeSegments(file, 3); // สูงสุด 3MB ต่อ segment
+      } catch (splitError: any) {
+        console.error('Error splitting audio:', splitError);
+        // ถ้าไม่สามารถตัดได้ ให้ใช้วิธีเดิม (chunk upload)
+        console.log('Falling back to chunk upload method...');
+        segments = [];
+      }
+      
+      if (segments.length > 0) {
           // ประมวลผลแบบ parallel (ส่งหลาย segments พร้อมกัน) เพื่อลดเวลา
           const totalSegments = segments.length;
           const results: (string | null)[] = new Array(totalSegments).fill(null);
@@ -588,11 +596,10 @@ export default function Home() {
             fileType: file.type || 'audio/mp4',
           });
           
-          setProcessingProgress(null);
-          setUploadProgress(null);
-          setLoading(false);
-          return;
-        }
+        setProcessingProgress(null);
+        setUploadProgress(null);
+        setLoading(false);
+        return;
       }
       
       // ใช้ chunk upload สำหรับไฟล์ใหญ่กว่า 3MB (Vercel Free tier limit ~4.5MB แต่ใช้ 3MB เพื่อความปลอดภัย)
