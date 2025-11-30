@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import { GoogleGenerativeAI } from '@google/generative-ai';
 
 // Waveform Animation Component
 const WaveformLoader = () => {
@@ -346,44 +347,85 @@ export default function Home() {
           
           setProcessingProgress({ current: 0, total: totalSegments });
           
-          // ฟังก์ชันประมวลผล segment เดียว
+          // ดึง API key จาก server (ครั้งเดียว)
+          const apiKeyResponse = await fetch('/api/get-api-key');
+          if (!apiKeyResponse.ok) {
+            throw new Error('ไม่สามารถดึง API key ได้');
+          }
+          const apiKeyData = await apiKeyResponse.json();
+          if (!apiKeyData.apiKey) {
+            throw new Error('ไม่พบ API key');
+          }
+          
+          const genAI = new GoogleGenerativeAI(apiKeyData.apiKey);
+          const modelsToTry = [
+            'gemini-2.5-flash',
+            'gemini-2.5-pro',
+            'gemini-1.5-flash',
+            'gemini-1.5-pro',
+            'gemini-pro',
+          ];
+          
+          // ฟังก์ชันประมวลผล segment เดียว (จาก client โดยตรง)
           const processSegment = async (index: number): Promise<void> => {
             try {
-              // ตรวจสอบขนาด segment ก่อนส่ง
+              // ตรวจสอบขนาด segment
               const segmentSizeMB = segments[index].size / 1024 / 1024;
               if (segmentSizeMB > 3.5) {
                 console.warn(`Segment ${index + 1} is ${segmentSizeMB.toFixed(2)}MB, may cause issues`);
               }
               
-              const segmentFormData = new FormData();
-              segmentFormData.append('audio', segments[index]);
-              segmentFormData.append('prompt', prompt);
-              segmentFormData.append('segmentIndex', index.toString());
-              segmentFormData.append('totalSegments', totalSegments.toString());
+              // อ่านไฟล์เป็น base64
+              const arrayBuffer = await segments[index].arrayBuffer();
+              const base64Audio = btoa(
+                new Uint8Array(arrayBuffer).reduce(
+                  (data, byte) => data + String.fromCharCode(byte),
+                  ''
+                )
+              );
               
-              const segmentResponse = await fetch('/api/process-segment', {
-                method: 'POST',
-                body: segmentFormData,
-              });
+              // สร้าง prompt สำหรับ segment นี้
+              const segmentPrompt = totalSegments > 1 
+                ? `${prompt}\n\nหมายเหตุ: นี่เป็นส่วนที่ ${index + 1} จากทั้งหมด ${totalSegments} ส่วนของไฟล์เสียง กรุณาถอดเสียงส่วนนี้เท่านั้น`
+                : prompt;
               
-              const contentType = segmentResponse.headers.get('content-type');
-              let segmentData;
+              let text = '';
+              let lastError: any = null;
               
-              if (contentType && contentType.includes('application/json')) {
-                segmentData = await segmentResponse.json();
-              } else {
-                const text = await segmentResponse.text();
-                throw new Error(`Failed to process segment ${index + 1}: ${text.substring(0, 200)}`);
+              // ลองใช้ model ต่างๆ
+              for (const modelName of modelsToTry) {
+                try {
+                  const model = genAI.getGenerativeModel({ model: modelName });
+                  const result = await model.generateContent([
+                    {
+                      inlineData: {
+                        data: base64Audio,
+                        mimeType: segments[index].type || 'audio/wav',
+                      },
+                    },
+                    segmentPrompt,
+                  ]);
+                  
+                  const response = await result.response;
+                  if (response) {
+                    const responseText = response.text();
+                    if (responseText && responseText.trim().length > 0) {
+                      text = responseText;
+                      break;
+                    }
+                  }
+                } catch (err: any) {
+                  lastError = err;
+                  continue;
+                }
               }
               
-              if (!segmentResponse.ok) {
-                throw new Error(segmentData.error || segmentData.details || `Failed to process segment ${index + 1}`);
+              if (!text) {
+                throw new Error(lastError?.message || 'ไม่สามารถประมวลผลเสียงได้');
               }
               
-              if (segmentData.text) {
-                results[index] = segmentData.text;
-                setProcessingProgress({ current: results.filter(r => r !== null).length, total: totalSegments });
-              }
+              results[index] = text;
+              setProcessingProgress({ current: results.filter(r => r !== null).length, total: totalSegments });
             } catch (error: any) {
               console.error(`Error processing segment ${index + 1}:`, error);
               // เก็บ error ไว้ใน results แทน null
