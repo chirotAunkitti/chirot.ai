@@ -35,7 +35,16 @@ const WaveformLoader = () => {
 };
 
 // Loading Screen Component
-const LoadingScreen = ({ progress }: { progress?: { current: number; total: number } | null }) => {
+const LoadingScreen = ({ 
+  uploadProgress, 
+  processingProgress 
+}: { 
+  uploadProgress?: { current: number; total: number } | null;
+  processingProgress?: { current: number; total: number } | null;
+}) => {
+  const isUploading = uploadProgress && uploadProgress.total > 1;
+  const isProcessing = processingProgress && processingProgress.total > 0;
+  
   return (
     <div className="bg-gradient-to-br from-slate-900 via-blue-900 to-slate-900 rounded-2xl shadow-2xl p-16 mb-8 min-h-[500px] flex items-center justify-center">
       <div className="flex flex-col items-center justify-center text-center w-full">
@@ -54,17 +63,32 @@ const LoadingScreen = ({ progress }: { progress?: { current: number; total: numb
           <WaveformLoader />
         </div>
         
-        {/* Progress Indicator */}
-        {progress && (
+        {/* Upload Progress Indicator */}
+        {isUploading && (
           <div className="mt-6 w-full max-w-md">
             <div className="bg-gray-700 rounded-full h-3 overflow-hidden">
               <div 
                 className="bg-blue-500 h-full transition-all duration-300"
-                style={{ width: `${(progress.current / progress.total) * 100}%` }}
+                style={{ width: `${(uploadProgress.current / uploadProgress.total) * 100}%` }}
               />
             </div>
             <p className="text-gray-300 text-sm mt-2">
-              Uploading chunks: {progress.current} / {progress.total}
+              Uploading chunks: {uploadProgress.current} / {uploadProgress.total}
+            </p>
+          </div>
+        )}
+        
+        {/* Processing Progress Indicator */}
+        {isProcessing && (
+          <div className="mt-6 w-full max-w-md">
+            <div className="bg-gray-700 rounded-full h-3 overflow-hidden">
+              <div 
+                className="bg-green-500 h-full transition-all duration-300"
+                style={{ width: `${(processingProgress.current / processingProgress.total) * 100}%` }}
+              />
+            </div>
+            <p className="text-gray-300 text-sm mt-2">
+              Processing segments: {processingProgress.current} / {processingProgress.total}
             </p>
           </div>
         )}
@@ -74,7 +98,11 @@ const LoadingScreen = ({ progress }: { progress?: { current: number; total: numb
           Your Transcription Is Being Processed
         </h2>
         <p className="text-gray-300 text-xl">
-          {progress ? `Uploading file... (${progress.current}/${progress.total} chunks)` : "We're converting your audio into high-quality text."}
+          {isUploading 
+            ? `Uploading file... (${uploadProgress.current}/${uploadProgress.total} chunks)`
+            : isProcessing
+            ? `Processing audio segments... (${processingProgress.current}/${processingProgress.total})`
+            : "We're converting your audio into high-quality text."}
         </p>
       </div>
     </div>
@@ -88,6 +116,7 @@ export default function Home() {
   const [result, setResult] = useState<any>(null);
   const [error, setError] = useState<string | null>(null);
   const [uploadProgress, setUploadProgress] = useState<{ current: number; total: number } | null>(null);
+  const [processingProgress, setProcessingProgress] = useState<{ current: number; total: number } | null>(null);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
@@ -106,6 +135,115 @@ export default function Home() {
     }
   };
 
+  // ฟังก์ชันตัดไฟล์เสียงเป็น segments ตามเวลา (ใช้ Web Audio API)
+  const splitAudioIntoTimeSegments = async (audioFile: File, segmentDurationSeconds: number = 60): Promise<File[]> => {
+    return new Promise(async (resolve, reject) => {
+      try {
+        const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+        const arrayBuffer = await audioFile.arrayBuffer();
+        const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+        
+        const sampleRate = audioBuffer.sampleRate;
+        const totalSamples = audioBuffer.length;
+        const segmentSamples = segmentDurationSeconds * sampleRate;
+        const totalSegments = Math.ceil(totalSamples / segmentSamples);
+        
+        const segments: File[] = [];
+        
+        for (let i = 0; i < totalSegments; i++) {
+          const startSample = i * segmentSamples;
+          const endSample = Math.min(startSample + segmentSamples, totalSamples);
+          const segmentLength = endSample - startSample;
+          
+          // สร้าง AudioBuffer สำหรับ segment นี้
+          const segmentBuffer = audioContext.createBuffer(
+            audioBuffer.numberOfChannels,
+            segmentLength,
+            sampleRate
+          );
+          
+          // คัดลอกข้อมูลจาก audioBuffer ไปยัง segmentBuffer
+          for (let channel = 0; channel < audioBuffer.numberOfChannels; channel++) {
+            const channelData = audioBuffer.getChannelData(channel);
+            const segmentChannelData = segmentBuffer.getChannelData(channel);
+            for (let j = 0; j < segmentLength; j++) {
+              segmentChannelData[j] = channelData[startSample + j];
+            }
+          }
+          
+          // แปลง AudioBuffer เป็น WAV file
+          const wav = audioBufferToWav(segmentBuffer);
+          const blob = new Blob([wav], { type: 'audio/wav' });
+          const segmentFile = new File([blob], `${audioFile.name}_segment_${i + 1}.wav`, { type: 'audio/wav' });
+          segments.push(segmentFile);
+        }
+        
+        resolve(segments);
+      } catch (error) {
+        console.error('Error splitting audio:', error);
+        reject(error);
+      }
+    });
+  };
+
+  // ฟังก์ชันแปลง AudioBuffer เป็น WAV format
+  const audioBufferToWav = (buffer: AudioBuffer): ArrayBuffer => {
+    const length = buffer.length;
+    const numberOfChannels = buffer.numberOfChannels;
+    const sampleRate = buffer.sampleRate;
+    const arrayBuffer = new ArrayBuffer(44 + length * numberOfChannels * 2);
+    const view = new DataView(arrayBuffer);
+    const channels: Float32Array[] = [];
+    let offset = 0;
+    let pos = 0;
+
+    // WAV header
+    const setUint16 = (data: number) => {
+      view.setUint16(pos, data, true);
+      pos += 2;
+    };
+    const setUint32 = (data: number) => {
+      view.setUint32(pos, data, true);
+      pos += 4;
+    };
+
+    // RIFF identifier
+    setUint32(0x46464952); // "RIFF"
+    setUint32(36 + length * numberOfChannels * 2); // file length - 8
+    setUint32(0x45564157); // "WAVE"
+
+    // format chunk
+    setUint32(0x20746d66); // "fmt "
+    setUint32(16); // chunk size
+    setUint16(1); // audio format (1 = PCM)
+    setUint16(numberOfChannels);
+    setUint32(sampleRate);
+    setUint32(sampleRate * numberOfChannels * 2); // byte rate
+    setUint16(numberOfChannels * 2); // block align
+    setUint16(16); // bits per sample
+
+    // data chunk
+    setUint32(0x61746164); // "data"
+    setUint32(length * numberOfChannels * 2);
+
+    // write interleaved data
+    for (let i = 0; i < numberOfChannels; i++) {
+      channels.push(buffer.getChannelData(i));
+    }
+
+    while (pos < arrayBuffer.byteLength) {
+      for (let i = 0; i < numberOfChannels; i++) {
+        let sample = Math.max(-1, Math.min(1, channels[i][offset]));
+        sample = sample < 0 ? sample * 0x8000 : sample * 0x7FFF;
+        view.setInt16(pos, sample, true);
+        pos += 2;
+      }
+      offset++;
+    }
+
+    return arrayBuffer;
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     
@@ -117,6 +255,8 @@ export default function Home() {
     setLoading(true);
     setError(null);
     setResult(null);
+    setUploadProgress(null);
+    setProcessingProgress(null);
 
     // ตรวจสอบขนาดไฟล์อีกครั้งก่อนส่ง
     const maxSize = 90 * 1024 * 1024; // 90MB
@@ -127,6 +267,84 @@ export default function Home() {
     }
 
     try {
+      // สำหรับไฟล์ใหญ่กว่า 20MB ให้ใช้วิธีแบ่งเป็น segments ตามเวลา
+      const largeFileThreshold = 20 * 1024 * 1024; // 20MB
+      const useTimeSegments = file.size > largeFileThreshold;
+      
+      if (useTimeSegments) {
+        // แบ่งไฟล์เป็น segments ตามเวลา (60 วินาทีต่อ segment)
+        console.log('Splitting audio into time segments...');
+        setUploadProgress({ current: 0, total: 1 }); // แสดงว่าเริ่มตัดไฟล์
+        
+        let segments: File[];
+        try {
+          segments = await splitAudioIntoTimeSegments(file, 60); // 60 วินาทีต่อ segment
+        } catch (splitError: any) {
+          console.error('Error splitting audio:', splitError);
+          // ถ้าไม่สามารถตัดได้ ให้ใช้วิธีเดิม (chunk upload)
+          console.log('Falling back to chunk upload method...');
+          segments = [];
+        }
+        
+        if (segments.length > 0) {
+          // ประมวลผลแต่ละ segment
+          const totalSegments = segments.length;
+          const results: string[] = [];
+          
+          setProcessingProgress({ current: 0, total: totalSegments });
+          
+          for (let i = 0; i < segments.length; i++) {
+            setProcessingProgress({ current: i + 1, total: totalSegments });
+            
+            const segmentFormData = new FormData();
+            segmentFormData.append('audio', segments[i]);
+            segmentFormData.append('prompt', prompt);
+            segmentFormData.append('segmentIndex', i.toString());
+            segmentFormData.append('totalSegments', totalSegments.toString());
+            
+            const segmentResponse = await fetch('/api/process-segment', {
+              method: 'POST',
+              body: segmentFormData,
+            });
+            
+            const contentType = segmentResponse.headers.get('content-type');
+            let segmentData;
+            
+            if (contentType && contentType.includes('application/json')) {
+              segmentData = await segmentResponse.json();
+            } else {
+              const text = await segmentResponse.text();
+              throw new Error(`Failed to process segment ${i + 1}: ${text.substring(0, 200)}`);
+            }
+            
+            if (!segmentResponse.ok) {
+              throw new Error(segmentData.error || `Failed to process segment ${i + 1}`);
+            }
+            
+            if (segmentData.text) {
+              results.push(segmentData.text);
+            }
+          }
+          
+          // รวมผลลัพธ์
+          const combinedResult = results.join('\n\n--- Segment Break ---\n\n');
+          
+          setResult({
+            success: true,
+            message: 'ประมวลผลเสร็จสิ้น',
+            result: combinedResult,
+            fileName: file.name,
+            fileSize: file.size,
+            fileType: file.type || 'audio/mp4',
+          });
+          
+          setProcessingProgress(null);
+          setUploadProgress(null);
+          setLoading(false);
+          return;
+        }
+      }
+      
       // ใช้ chunk upload สำหรับไฟล์ใหญ่กว่า 3MB (Vercel Free tier limit ~4.5MB แต่ใช้ 3MB เพื่อความปลอดภัย)
       const chunkSize = 3 * 1024 * 1024; // 3MB per chunk (ปลอดภัยกว่า 4MB)
       const useChunkUpload = file.size > chunkSize;
@@ -257,6 +475,7 @@ export default function Home() {
     } finally {
       setLoading(false);
       setUploadProgress(null);
+      setProcessingProgress(null);
     }
   };
 
@@ -433,7 +652,7 @@ export default function Home() {
           </div>
 
           {/* Loading Screen */}
-          {loading && <LoadingScreen progress={uploadProgress} />}
+          {loading && <LoadingScreen uploadProgress={uploadProgress} processingProgress={processingProgress} />}
 
           {/* Error Message */}
           {error && (
