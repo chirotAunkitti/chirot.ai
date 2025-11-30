@@ -86,6 +86,7 @@ export async function POST(request: NextRequest) {
           throw new Error('Response is empty');
         }
         
+        
         const responseText = response.text();
         
         if (!responseText || responseText.trim().length === 0) {
