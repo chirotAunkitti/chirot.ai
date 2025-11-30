@@ -376,8 +376,15 @@ export default function Home() {
           for (const modelName of modelsToTry) {
             try {
               console.log(`Trying model: ${modelName}`);
-              const model = genAI.getGenerativeModel({ model: modelName });
-              const result = await model.generateContent([
+              const model = genAI.getGenerativeModel({ 
+                model: modelName,
+                generationConfig: {
+                  maxOutputTokens: 8192, // เพิ่ม output token limit (default 2048, max 8192 สำหรับบาง models)
+                }
+              });
+              
+              // ใช้ Streaming API เพื่อรับผลลัพธ์ทั้งหมด (หลีกเลี่ยง MAX_TOKENS limit)
+              const result = await model.generateContentStream([
                 {
                   inlineData: {
                     data: base64Audio,
@@ -387,20 +394,58 @@ export default function Home() {
                 prompt,
               ]);
               
-              const response = await result.response;
-              if (response) {
-                const responseText = response.text();
-                if (responseText && responseText.trim().length > 0) {
-                  text = responseText;
-                  successfulModel = modelName;
-                  console.log(`✅ Success with model: ${modelName}, text length: ${text.length}`);
-                  break;
+              // รวบรวมผลลัพธ์จาก stream
+              let fullText = '';
+              for await (const chunk of result.stream) {
+                const chunkText = chunk.text();
+                if (chunkText) {
+                  fullText += chunkText;
+                  // อัปเดต progress แบบ real-time
+                  setProcessingProgress({ current: 0.8 + (fullText.length / 1000000) * 0.2, total: 1 });
                 }
+              }
+              
+              if (fullText && fullText.trim().length > 0) {
+                text = fullText;
+                successfulModel = modelName;
+                console.log(`✅ Success with model: ${modelName}, text length: ${text.length}`);
+                break;
               }
             } catch (err: any) {
               lastError = err;
               console.log(`❌ Model ${modelName} failed: ${err.message?.substring(0, 100)}`);
-              continue;
+              
+              // ถ้า streaming ไม่ได้ ลองใช้วิธีปกติ
+              try {
+                const model = genAI.getGenerativeModel({ 
+                  model: modelName,
+                  generationConfig: {
+                    maxOutputTokens: 8192,
+                  }
+                });
+                const result = await model.generateContent([
+                  {
+                    inlineData: {
+                      data: base64Audio,
+                      mimeType: file.type || 'audio/mp4',
+                    },
+                  },
+                  prompt,
+                ]);
+                
+                const response = await result.response;
+                if (response) {
+                  const responseText = response.text();
+                  if (responseText && responseText.trim().length > 0) {
+                    text = responseText;
+                    successfulModel = modelName;
+                    console.log(`✅ Success with model: ${modelName} (non-streaming), text length: ${text.length}`);
+                    break;
+                  }
+                }
+              } catch (fallbackErr: any) {
+                continue;
+              }
             }
           }
           
@@ -516,11 +561,18 @@ export default function Home() {
               let text = '';
               let lastError: any = null;
               
-              // ลองใช้ model ต่างๆ
+              // ลองใช้ model ต่างๆ (ใช้ streaming เพื่อรับผลลัพธ์ทั้งหมด)
               for (const modelName of modelsToTry) {
                 try {
-                  const model = genAI.getGenerativeModel({ model: modelName });
-                  const result = await model.generateContent([
+                  const model = genAI.getGenerativeModel({ 
+                    model: modelName,
+                    generationConfig: {
+                      maxOutputTokens: 8192, // เพิ่ม output token limit
+                    }
+                  });
+                  
+                  // ใช้ Streaming API
+                  const result = await model.generateContentStream([
                     {
                       inlineData: {
                         data: base64Audio,
@@ -530,17 +582,51 @@ export default function Home() {
                     segmentPrompt,
                   ]);
                   
-                  const response = await result.response;
-                  if (response) {
-                    const responseText = response.text();
-                    if (responseText && responseText.trim().length > 0) {
-                      text = responseText;
-                      break;
+                  // รวบรวมผลลัพธ์จาก stream
+                  let fullText = '';
+                  for await (const chunk of result.stream) {
+                    const chunkText = chunk.text();
+                    if (chunkText) {
+                      fullText += chunkText;
                     }
+                  }
+                  
+                  if (fullText && fullText.trim().length > 0) {
+                    text = fullText;
+                    break;
                   }
                 } catch (err: any) {
                   lastError = err;
-                  continue;
+                  
+                  // ถ้า streaming ไม่ได้ ลองใช้วิธีปกติ
+                  try {
+                    const model = genAI.getGenerativeModel({ 
+                      model: modelName,
+                      generationConfig: {
+                        maxOutputTokens: 8192,
+                      }
+                    });
+                    const result = await model.generateContent([
+                      {
+                        inlineData: {
+                          data: base64Audio,
+                          mimeType: segments[index].type || 'audio/wav',
+                        },
+                      },
+                      segmentPrompt,
+                    ]);
+                    
+                    const response = await result.response;
+                    if (response) {
+                      const responseText = response.text();
+                      if (responseText && responseText.trim().length > 0) {
+                        text = responseText;
+                        break;
+                      }
+                    }
+                  } catch (fallbackErr: any) {
+                    continue;
+                  }
                 }
               }
               
