@@ -8,28 +8,41 @@ export const maxDuration = 300;
 export async function POST(request: NextRequest) {
   try {
     const formData = await request.formData();
+    const audioFile = formData.get('audio') as File;
     const sessionId = formData.get('sessionId') as string;
     const customPrompt = formData.get('prompt') as string;
 
-    if (!sessionId) {
+    let completeFile: Buffer;
+    let fileName: string;
+    let mimeType: string;
+
+    // รองรับทั้งการส่งไฟล์โดยตรงและใช้ sessionId (backward compatibility)
+    if (audioFile) {
+      // รับไฟล์โดยตรง (วิธีใหม่ - รวมไฟล์ที่ client)
+      const arrayBuffer = await audioFile.arrayBuffer();
+      completeFile = Buffer.from(arrayBuffer);
+      fileName = audioFile.name;
+      mimeType = audioFile.type || 'audio/mp4';
+    } else if (sessionId) {
+      // ใช้ sessionId (วิธีเก่า - สำหรับ backward compatibility)
+      const storage = chunkStorage.get(sessionId);
+      if (!storage || storage.chunks.length === 0) {
+        return NextResponse.json(
+          { error: 'File not found or not complete' },
+          { status: 404 }
+        );
+      }
+      completeFile = storage.chunks[0];
+      fileName = storage.fileName;
+      mimeType = storage.mimeType;
+      // ลบไฟล์จาก storage
+      chunkStorage.delete(sessionId);
+    } else {
       return NextResponse.json(
-        { error: 'Missing sessionId' },
+        { error: 'Missing audio file or sessionId' },
         { status: 400 }
       );
     }
-
-    // ดึงไฟล์รวมจาก storage
-    const storage = chunkStorage.get(sessionId);
-    if (!storage || storage.chunks.length === 0) {
-      return NextResponse.json(
-        { error: 'File not found or not complete' },
-        { status: 404 }
-      );
-    }
-
-    const completeFile = storage.chunks[0];
-    const fileName = storage.fileName;
-    const mimeType = storage.mimeType;
 
     // ใช้ prompt ที่ผู้ใช้ส่งมา หรือใช้ default prompt
     const prompt = customPrompt || `คุณเป็นผู้เชี่ยวชาญในการประมวลผลเสียง กรุณาวิเคราะห์ไฟล์เสียงนี้และให้คำแนะนำหรือข้อมูลเกี่ยวกับการถอนเสียง (vocal removal) จากไฟล์เสียงนี้`;
@@ -112,8 +125,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // ลบไฟล์จาก storage หลังจากประมวลผลเสร็จ
-    chunkStorage.delete(sessionId);
+    // ไฟล์ถูกลบแล้ว (ถ้าใช้ sessionId) หรือไม่ต้องลบ (ถ้าส่งไฟล์โดยตรง)
 
     return NextResponse.json({
       success: true,

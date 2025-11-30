@@ -116,66 +116,49 @@ export default function Home() {
       const useChunkUpload = file.size > chunkSize;
 
       if (useChunkUpload) {
-        // Chunk Upload
+        // Chunk Upload - รวมไฟล์ที่ client แล้วส่งไปยัง process-audio โดยตรง
         const sessionId = `session_${Date.now()}_${Math.random().toString(36).substring(7)}`;
         const totalChunks = Math.ceil(file.size / chunkSize);
+        const chunks: Blob[] = [];
 
-        // ส่ง chunks ทีละ chunk
+        // อ่าน chunks ทั้งหมดและรวมที่ client
         for (let i = 0; i < totalChunks; i++) {
           const start = i * chunkSize;
           const end = Math.min(start + chunkSize, file.size);
           const chunk = file.slice(start, end);
-
-          const chunkFormData = new FormData();
-          chunkFormData.append('chunk', chunk);
-          chunkFormData.append('chunkIndex', i.toString());
-          chunkFormData.append('totalChunks', totalChunks.toString());
-          chunkFormData.append('sessionId', sessionId);
-          chunkFormData.append('fileName', file.name);
-          chunkFormData.append('mimeType', file.type || 'audio/mp4');
-
-          const chunkResponse = await fetch('/api/upload-chunk', {
-            method: 'POST',
-            body: chunkFormData,
-          });
-
-          // ตรวจสอบ content-type ก่อน parse JSON
-          const contentType = chunkResponse.headers.get('content-type');
-          let chunkData;
-          
-          if (contentType && contentType.includes('application/json')) {
-            chunkData = await chunkResponse.json();
-          } else {
-            const text = await chunkResponse.text();
-            throw new Error(`Failed to upload chunk: ${text.substring(0, 200)}`);
-          }
-
-          if (!chunkResponse.ok) {
-            throw new Error(chunkData.error || chunkData.details || 'Failed to upload chunk');
-          }
-          
-          // แสดง progress
-          if (chunkData.complete) {
-            // ไฟล์รวมเสร็จแล้ว เรียก API ประมวลผล
-            const processFormData = new FormData();
-            processFormData.append('sessionId', sessionId);
-            processFormData.append('prompt', prompt);
-
-            const processResponse = await fetch('/api/process-audio', {
-              method: 'POST',
-              body: processFormData,
-            });
-
-            if (!processResponse.ok) {
-              const errorData = await processResponse.json();
-              throw new Error(errorData.error || errorData.details || 'Failed to process audio');
-            }
-
-            const processData = await processResponse.json();
-            setResult(processData);
-            break;
-          }
+          chunks.push(chunk);
         }
+
+        // รวม chunks เป็นไฟล์เดียวที่ client
+        const completeBlob = new Blob(chunks, { type: file.type || 'audio/mp4' });
+        const completeFile = new File([completeBlob], file.name, { type: file.type || 'audio/mp4' });
+
+        // ส่งไฟล์รวมไปยัง process-audio โดยตรง
+        const processFormData = new FormData();
+        processFormData.append('audio', completeFile);
+        processFormData.append('prompt', prompt);
+
+        const processResponse = await fetch('/api/process-audio', {
+          method: 'POST',
+          body: processFormData,
+        });
+
+        // ตรวจสอบ content-type ก่อน parse JSON
+        const contentType = processResponse.headers.get('content-type');
+        let processData;
+        
+        if (contentType && contentType.includes('application/json')) {
+          processData = await processResponse.json();
+        } else {
+          const text = await processResponse.text();
+          throw new Error(`Failed to process audio: ${text.substring(0, 200)}`);
+        }
+
+        if (!processResponse.ok) {
+          throw new Error(processData.error || processData.details || 'Failed to process audio');
+        }
+
+        setResult(processData);
       } else {
         // ไฟล์เล็ก ใช้วิธีเดิม
         const formData = new FormData();
