@@ -136,10 +136,10 @@ export default function Home() {
   };
 
   // ฟังก์ชันตัดไฟล์เสียงเป็น segments ตามเวลา (ใช้ Web Audio API)
-  // ปรับขนาด segment ให้เหมาะสมกับ Vercel limit (~4MB)
+  // ปรับขนาด segment ให้เหมาะสมกับ Vercel limit (~4MB) และ timeout (10s)
   const splitAudioIntoTimeSegments = async (audioFile: File, maxSegmentSizeMB: number = 3): Promise<File[]> => {
     const maxSegmentSizeBytes = maxSegmentSizeMB * 1024 * 1024;
-    const segmentDurationSeconds = 20; // เริ่มต้นที่ 20 วินาที
+    const segmentDurationSeconds = 10; // ลดเป็น 10 วินาทีเพื่อให้ประมวลผลเร็วขึ้น
     return new Promise(async (resolve, reject) => {
       try {
         const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
@@ -191,8 +191,8 @@ export default function Home() {
           if (segmentFile.size > maxSegmentSizeBytes) {
             console.log(`Segment ${segmentIndex} is too large (${(segmentFile.size / 1024 / 1024).toFixed(2)}MB), splitting further...`);
             
-            // แบ่งเป็น sub-segments ที่เล็กลง (10 วินาที)
-            const subSegmentDuration = 10;
+            // แบ่งเป็น sub-segments ที่เล็กลง (5 วินาที)
+            const subSegmentDuration = 5; // ลดเป็น 5 วินาทีเพื่อให้ประมวลผลเร็วขึ้น
             const subSegmentSamples = subSegmentDuration * sampleRate;
             const subStartSample = startSample;
             const subEndSample = endSample;
@@ -204,10 +204,10 @@ export default function Home() {
               
               const subSegmentFile = createSegmentFromSamples(subStart, subEnd, segmentIndex);
               
-              // ถ้ายังใหญ่เกินไป ให้แบ่งเป็น 5 วินาที
+              // ถ้ายังใหญ่เกินไป ให้แบ่งเป็น 3 วินาที
               if (subSegmentFile.size > maxSegmentSizeBytes) {
-                console.log(`Sub-segment ${segmentIndex} is still too large, splitting to 5s segments...`);
-                const tinySegmentDuration = 5;
+                console.log(`Sub-segment ${segmentIndex} is still too large, splitting to 3s segments...`);
+                const tinySegmentDuration = 3;
                 const tinySegmentSamples = tinySegmentDuration * sampleRate;
                 const tinyTotalSegments = Math.ceil((subEnd - subStart) / tinySegmentSamples);
                 
@@ -339,57 +339,91 @@ export default function Home() {
         }
         
         if (segments.length > 0) {
-          // ประมวลผลแต่ละ segment
+          // ประมวลผลแบบ parallel (ส่งหลาย segments พร้อมกัน) เพื่อลดเวลา
           const totalSegments = segments.length;
-          const results: string[] = [];
+          const results: (string | null)[] = new Array(totalSegments).fill(null);
+          const maxConcurrent = 3; // ส่งพร้อมกันสูงสุด 3 segments
           
           setProcessingProgress({ current: 0, total: totalSegments });
           
-          for (let i = 0; i < segments.length; i++) {
-            setProcessingProgress({ current: i + 1, total: totalSegments });
-            
-            // ตรวจสอบขนาด segment ก่อนส่ง
-            const segmentSizeMB = segments[i].size / 1024 / 1024;
-            if (segmentSizeMB > 3.5) {
-              console.warn(`Segment ${i + 1} is ${segmentSizeMB.toFixed(2)}MB, may cause issues`);
+          // ฟังก์ชันประมวลผล segment เดียว
+          const processSegment = async (index: number): Promise<void> => {
+            try {
+              // ตรวจสอบขนาด segment ก่อนส่ง
+              const segmentSizeMB = segments[index].size / 1024 / 1024;
+              if (segmentSizeMB > 3.5) {
+                console.warn(`Segment ${index + 1} is ${segmentSizeMB.toFixed(2)}MB, may cause issues`);
+              }
+              
+              const segmentFormData = new FormData();
+              segmentFormData.append('audio', segments[index]);
+              segmentFormData.append('prompt', prompt);
+              segmentFormData.append('segmentIndex', index.toString());
+              segmentFormData.append('totalSegments', totalSegments.toString());
+              
+              const segmentResponse = await fetch('/api/process-segment', {
+                method: 'POST',
+                body: segmentFormData,
+              });
+              
+              const contentType = segmentResponse.headers.get('content-type');
+              let segmentData;
+              
+              if (contentType && contentType.includes('application/json')) {
+                segmentData = await segmentResponse.json();
+              } else {
+                const text = await segmentResponse.text();
+                throw new Error(`Failed to process segment ${index + 1}: ${text.substring(0, 200)}`);
+              }
+              
+              if (!segmentResponse.ok) {
+                throw new Error(segmentData.error || segmentData.details || `Failed to process segment ${index + 1}`);
+              }
+              
+              if (segmentData.text) {
+                results[index] = segmentData.text;
+                setProcessingProgress({ current: results.filter(r => r !== null).length, total: totalSegments });
+              }
+            } catch (error: any) {
+              console.error(`Error processing segment ${index + 1}:`, error);
+              // เก็บ error ไว้ใน results แทน null
+              results[index] = `[ERROR: Segment ${index + 1} failed: ${error.message}]`;
+              setProcessingProgress({ current: results.filter(r => r !== null).length, total: totalSegments });
             }
+          };
+          
+          // ประมวลผลแบบ batch (ส่งพร้อมกันสูงสุด maxConcurrent)
+          for (let i = 0; i < segments.length; i += maxConcurrent) {
+            const batch = segments.slice(i, i + maxConcurrent);
+            const batchPromises = batch.map((_, batchIndex) => processSegment(i + batchIndex));
             
-            const segmentFormData = new FormData();
-            segmentFormData.append('audio', segments[i]);
-            segmentFormData.append('prompt', prompt);
-            segmentFormData.append('segmentIndex', i.toString());
-            segmentFormData.append('totalSegments', totalSegments.toString());
-            
-            const segmentResponse = await fetch('/api/process-segment', {
-              method: 'POST',
-              body: segmentFormData,
-            });
-            
-            const contentType = segmentResponse.headers.get('content-type');
-            let segmentData;
-            
-            if (contentType && contentType.includes('application/json')) {
-              segmentData = await segmentResponse.json();
-            } else {
-              const text = await segmentResponse.text();
-              throw new Error(`Failed to process segment ${i + 1}: ${text.substring(0, 200)}`);
-            }
-            
-            if (!segmentResponse.ok) {
-              throw new Error(segmentData.error || `Failed to process segment ${i + 1}`);
-            }
-            
-            if (segmentData.text) {
-              results.push(segmentData.text);
-            }
+            // รอให้ batch นี้เสร็จก่อนไป batch ถัดไป
+            await Promise.all(batchPromises);
+          }
+          
+          // กรอง null results (ถ้ามี)
+          const validResults = results.filter(r => r !== null && !r.startsWith('[ERROR:')) as string[];
+          const errorResults = results.filter(r => r !== null && r.startsWith('[ERROR:'));
+          
+          if (errorResults.length > 0) {
+            console.warn(`Some segments failed:`, errorResults);
+          }
+          
+          if (validResults.length === 0) {
+            throw new Error('All segments failed to process');
           }
           
           // รวมผลลัพธ์
-          const combinedResult = results.join('\n\n--- Segment Break ---\n\n');
+          let combinedResult = validResults.join('\n\n--- Segment Break ---\n\n');
+          
+          if (errorResults.length > 0) {
+            // เพิ่ม warning message ในผลลัพธ์
+            combinedResult = `⚠️ หมายเหตุ: ${errorResults.length} จาก ${totalSegments} segments ประมวลผลไม่สำเร็จ\n\n${combinedResult}`;
+          }
           
           setResult({
             success: true,
-            message: 'ประมวลผลเสร็จสิ้น',
+            message: `ประมวลผลเสร็จสิ้น (${validResults.length}/${totalSegments} segments สำเร็จ)`,
             result: combinedResult,
             fileName: file.name,
             fileSize: file.size,
